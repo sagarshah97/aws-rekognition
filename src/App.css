@@ -1,0 +1,76 @@
+@font-face {
+  font-family: "NeoSansBlack";
+  src: local("NeoSansBlack"), url("./font/NeoSansBlack.otf") format("opentype");
+}
+
+@font-face {
+  font-family: "NeoSansBlackItalic";
+  src: local("NeoSansBlackItalic"),
+    url("./font/NeoSansBlackItalic.otf") format("opentype");
+}
+
+@font-face {
+  font-family: "NeoSansLightItalic";
+  src: local("NeoSansLightItalic"),
+    url("./font/NeoSansLightItalic.otf") format("opentype");
+}
+
+@font-face {
+  font-family: "NeoSansMediumItalic";
+  src: local("NeoSansMediumItalic"),
+    url("./font/NeoSansMediumItalic.otf") format("opentype");
+}
+
+@font-face {
+  font-family: "NeoSansStdRegular";
+  src: local("NeoSansStdRegular"),
+    url("./font/NeoSansStdRegular.otf") format("opentype");
+}
+
+@font-face {
+  font-family: "NeoSansStdLight";
+  src: local("NeoSansStdLight"),
+    url("./font/NeoSansStdLight.otf") format("opentype");
+}
+
+@font-face {
+  font-family: "NeoSansStdBold";
+  src: local("NeoSansStdBold"),
+    url("./font/NeoSansStdBold.otf") format("opentype");
+}
+
+.header-font {
+  color: #29448b;
+  font-size: 2.5rem !important;
+  font-family: NeoSansBlack !important;
+  letter-spacing: calc(-0.00555556em) !important;
+}
+
+.title-font {
+  color: #29448b;
+  font-size: 1.8rem !important;
+  font-family: NeoSansBlack !important;
+  letter-spacing: calc(-0.00555556em) !important;
+}
+
+.sub-header-font {
+  color: #29448b;
+  font-size: 1.7rem !important;
+  font-family: NeoSansStdBold !important;
+  letter-spacing: calc(-0.00555556em) !important;
+}
+
+.body-font {
+  color: #29448b;
+  font-size: 1rem !important;
+  font-family: NeoSansStdRegular !important;
+  letter-spacing: calc(-0.00555556em) !important;
+}
+
+.btn-color {
+  background-color: #29448b !important;
+}
+
+.btn-color-disabled {
+  background-color: #d6d6d6 !important;
+}
