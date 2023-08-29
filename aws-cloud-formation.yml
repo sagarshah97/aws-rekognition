@@ -1,0 +1,483 @@
+Resources:
+  DynamoDBTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: user-data
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+
+  RekognitionBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: facial-verification
+      AccessControl: Private
+
+  RekognitionLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: facialVerification
+      Handler: index.lambda_handler
+      Role: arn:aws:iam::788520884685:role/LabRole
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import base64
+
+          def compare_faces(bucket_name, key, targetFile):
+              rekognition_client = boto3.client('rekognition')
+              similarity = "0"
+              
+              try:
+                  response = rekognition_client.compare_faces(SimilarityThreshold=80,
+                                                  SourceImage={'S3Object': {'Bucket': bucket_name, 'Name': key}},
+                                                  TargetImage={'Bytes': base64.b64decode(targetFile)})
+                  for faceMatch in response['FaceMatches']:
+                      position = faceMatch['Face']['BoundingBox']
+                      similarity = str(faceMatch['Similarity'])
+                  
+                  return similarity
+              except:
+                  return None
+
+          def lambda_handler(event, context):
+              bucket_name = 'facial-verification'
+              key = event['key']
+              target_file = event['target']
+              
+              face_matches = compare_faces(bucket_name, key, target_file)
+              
+              if face_matches:
+                  verification = True if float(face_matches) > 80 else False
+                  return {
+                      'statusCode': 200,
+                      'body': json.dumps({
+                          'verification': verification,
+                          'similarity': round(float(face_matches), 2)
+                      })
+                  }
+              else:
+                  return {
+                      'statusCode': 500,
+                      'body': json.dumps({
+                          'error': True,
+                          'message': 'Error occurred while verification.'
+                      })
+                  }
+      Runtime: python3.9
+      Timeout: 30
+
+  UploadLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: uploadImageForVerification
+      Handler: index.lambda_handler
+      Role: arn:aws:iam::788520884685:role/LabRole
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import base64
+          from botocore.exceptions import ClientError
+
+          def lambda_handler(event, context):
+              s3 = boto3.client('s3')
+              dynamodb = boto3.client('dynamodb')
+              bucket_name = 'facial-verification'
+              key = event['key']
+              username = event['username']
+              encoded_image = event['image']
+              decoded_image = base64.b64decode(encoded_image)
+
+              try:
+                  s3.put_object(Body=decoded_image, Bucket=bucket_name, Key=key)
+                  response = dynamodb.put_item(
+                      TableName='user-data',
+                      Item={
+                          'pk': {'S': 'user#'+username},
+                          'username': {'S': username},
+                          's3_object_key': {'S': key}
+                      }
+                  )
+
+                  return {
+                      'statusCode': 200,
+                      'body': json.dumps('Image uploaded successfully')
+                  }
+              except ClientError as e:
+                  return {
+                      'statusCode': 500,
+                      'body': json.dumps('Error uploading image to S3')
+                  }
+
+      Runtime: python3.9
+      Timeout: 30
+
+  CheckRegistrationLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: checkRegistrationForVerification
+      Handler: index.lambda_handler
+      Role: arn:aws:iam::788520884685:role/LabRole
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+
+          def lambda_handler(event, context):
+              dynamodb = boto3.client('dynamodb')
+              username = event['username']
+              table_name = 'user-data'
+              response = dynamodb.get_item(
+                  TableName=table_name,
+                  Key={
+                      'pk': {'S': 'user#'+username}
+                  }
+              )
+
+              if 'Item' in response:
+                  return {
+                      'statusCode': 200,
+                      'body': json.dumps(True)
+                  }
+              else:
+                  return {
+                      'statusCode': 200,
+                      'body': json.dumps(False)
+                  }
+
+      Runtime: python3.9
+      Timeout: 30
+
+  RekognitionApiGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: rekognition-analysis-api
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+
+  GatewayResponse4:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      ResponseParameters:
+        gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+        gatewayresponse.header.Access-Control-Allow-Methods: "'OPTIONS,POST'"
+        gatewayresponse.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+      ResponseType: DEFAULT_4XX
+      RestApiId:
+        Ref: RekognitionApiGateway
+      StatusCode: "200"
+
+  GatewayResponse5:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      ResponseParameters:
+        gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+        gatewayresponse.header.Access-Control-Allow-Methods: "'OPTIONS,POST'"
+        gatewayresponse.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+      ResponseType: DEFAULT_5XX
+      RestApiId:
+        Ref: RekognitionApiGateway
+      StatusCode: "200"
+
+  RekognitionApiResourceVerify:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId:
+        Ref: RekognitionApiGateway
+      ParentId:
+        Fn::GetAtt: [RekognitionApiGateway, RootResourceId]
+      PathPart: verify
+
+  RekognitionApiResourceUpload:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId:
+        Ref: RekognitionApiGateway
+      ParentId:
+        Fn::GetAtt: [RekognitionApiGateway, RootResourceId]
+      PathPart: upload
+
+  RekognitionApiResourceCheck:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId:
+        Ref: RekognitionApiGateway
+      ParentId:
+        Fn::GetAtt: [RekognitionApiGateway, RootResourceId]
+      PathPart: check
+
+  RekognitionApiMethodOptionsVerify:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId:
+        Ref: RekognitionApiGateway
+      ResourceId:
+        Ref: RekognitionApiResourceVerify
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        IntegrationResponses:
+          - StatusCode: "200"
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'OPTIONS,POST'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: "{}"
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: false
+            method.response.header.Access-Control-Allow-Methods: false
+            method.response.header.Access-Control-Allow-Origin: false
+          ResponseModels:
+            application/json: Empty
+
+  RekognitionApiMethodOptionsUpload:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId:
+        Ref: RekognitionApiGateway
+      ResourceId:
+        Ref: RekognitionApiResourceUpload
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        IntegrationResponses:
+          - StatusCode: "200"
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'OPTIONS,POST'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: "{}"
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: false
+            method.response.header.Access-Control-Allow-Methods: false
+            method.response.header.Access-Control-Allow-Origin: false
+          ResponseModels:
+            application/json: Empty
+
+  RekognitionApiMethodOptionsCheck:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId:
+        Ref: RekognitionApiGateway
+      ResourceId:
+        Ref: RekognitionApiResourceCheck
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        IntegrationResponses:
+          - StatusCode: "200"
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'OPTIONS,POST'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: "{}"
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: false
+            method.response.header.Access-Control-Allow-Methods: false
+            method.response.header.Access-Control-Allow-Origin: false
+          ResponseModels:
+            application/json: Empty
+
+  RekognitionApiMethodPostVerify:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId:
+        Ref: RekognitionApiGateway
+      ResourceId:
+        Ref: RekognitionApiResourceVerify
+      HttpMethod: POST
+      AuthorizationType: NONE
+      ApiKeyRequired: true
+      Integration:
+        Type: AWS
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${RekognitionLambda.Arn}/invocations"
+        IntegrationResponses:
+          - StatusCode: "200"
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'OPTIONS,POST'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+        Credentials: arn:aws:iam::788520884685:role/LabRole
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseModels:
+            application/json: Empty
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: false
+            method.response.header.Access-Control-Allow-Methods: false
+            method.response.header.Access-Control-Allow-Origin: false
+
+  RekognitionApiMethodPostUpload:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId:
+        Ref: RekognitionApiGateway
+      ResourceId:
+        Ref: RekognitionApiResourceUpload
+      HttpMethod: POST
+      AuthorizationType: NONE
+      ApiKeyRequired: true
+      Integration:
+        Type: AWS
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${UploadLambda.Arn}/invocations"
+        IntegrationResponses:
+          - StatusCode: "200"
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'OPTIONS,POST'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+        Credentials: arn:aws:iam::788520884685:role/LabRole
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseModels:
+            application/json: Empty
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: false
+            method.response.header.Access-Control-Allow-Methods: false
+            method.response.header.Access-Control-Allow-Origin: false
+
+  RekognitionApiMethodPostCheck:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId:
+        Ref: RekognitionApiGateway
+      ResourceId:
+        Ref: RekognitionApiResourceCheck
+      HttpMethod: POST
+      AuthorizationType: NONE
+      ApiKeyRequired: true
+      Integration:
+        Type: AWS
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${CheckRegistrationLambda.Arn}/invocations"
+        IntegrationResponses:
+          - StatusCode: "200"
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'OPTIONS,POST'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+        Credentials: arn:aws:iam::788520884685:role/LabRole
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseModels:
+            application/json: Empty
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: false
+            method.response.header.Access-Control-Allow-Methods: false
+            method.response.header.Access-Control-Allow-Origin: false
+
+  RekognitionUsagePlan:
+    Type: AWS::ApiGateway::UsagePlan
+    Properties:
+      ApiStages:
+        - ApiId:
+            Ref: RekognitionApiGateway
+          Stage:
+            Ref: RekognitionApiStage
+      UsagePlanName: RekognitionUsagePlan
+
+  RekognitionUsagePlanKey:
+    Type: AWS::ApiGateway::UsagePlanKey
+    Properties:
+      KeyId:
+        Ref: RekognitionApiKey
+      KeyType: API_KEY
+      UsagePlanId:
+        Ref: RekognitionUsagePlan
+
+  RekognitionApiKey:
+    Type: AWS::ApiGateway::ApiKey
+    Properties:
+      Name: recognition-key
+      Description: API Key for regonition-analysis-api API Gateway
+      Enabled: true
+      GenerateDistinctId: true
+
+  RekognitionApiStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      DeploymentId: !Ref RekognitionApiDeployment
+      RestApiId: !Ref RekognitionApiGateway
+      StageName: dev
+
+  RekognitionApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    Properties:
+      RestApiId: !Ref RekognitionApiGateway
+    DependsOn:
+      - RekognitionApiMethodPostVerify
+      - RekognitionApiMethodPostUpload
+      - RekognitionApiMethodPostCheck
+
+  FetchApiKeyLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: fetchApiKeyPython
+      Runtime: python3.9
+      Handler: index.lambda_handler
+      Role: arn:aws:iam::788520884685:role/LabRole
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+
+          def get_api_gateway_key_value(api_key_id):
+              apigateway_client = boto3.client('apigateway')
+              
+              try:
+                  response = apigateway_client.get_api_key(apiKey=api_key_id, includeValue=True)
+                  api_key_value = response['value']
+                  return api_key_value
+              except Exception as e:
+                  raise Exception(f"Error fetching API Key Value: {str(e)}")
+
+          def lambda_handler(event, context):
+              try:
+                  api_key_id = event['ResourceProperties']['ApiKeyId']
+                  api_key_value = get_api_gateway_key_value(api_key_id)
+
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {"APIKeyValue": api_key_value})
+              except Exception as e:
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {"Error": str(e)})
+
+  CustomResource:
+    Type: Custom::InvokeFetchApiKeyPython
+    Properties:
+      ServiceToken: !GetAtt FetchApiKeyLambda.Arn
+      ApiKeyId: !Ref RekognitionApiKey
+
+Outputs:
+  ApiGatewayEndpoint:
+    Value: !Join
+      - ""
+      - - "https://"
+        - !Ref RekognitionApiGateway
+        - ".execute-api.us-east-1.amazonaws.com/dev"
+    Description: The API Gateway endpoint URL
+
+  ApiKey:
+    Value: !GetAtt CustomResource.APIKeyValue
+    Description: The generated API Key
